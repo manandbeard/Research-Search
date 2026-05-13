@@ -1,0 +1,61 @@
+# Firebase Blueprint
+
+```json
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile data",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["email", "createdAt"]
+    },
+    "SearchHistory": {
+      "title": "SearchHistory",
+      "description": "A past search query and its synthesis",
+      "type": "object",
+      "properties": {
+        "query": { "type": "string" },
+        "synthesis": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["query", "createdAt"]
+    },
+    "SavedPaper": {
+      "title": "SavedPaper",
+      "description": "A research paper saved by the user",
+      "type": "object",
+      "properties": {
+        "paperId": { "type": "string" },
+        "title": { "type": "string" },
+        "authors": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "year": { "type": "number" },
+        "abstract": { "type": "string" },
+        "url": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["paperId", "title", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "User profiles"
+    },
+    "/users/{userId}/history/{searchId}": {
+      "schema": { "$ref": "SearchHistory" },
+      "description": "User search history"
+    },
+    "/users/{userId}/saved_papers/{savedPaperId}": {
+      "schema": { "$ref": "SavedPaper" },
+      "description": "User saved papers"
+    }
+  }
+}
+```
