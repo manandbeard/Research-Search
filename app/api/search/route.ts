@@ -8,30 +8,27 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 });
     }
 
-    // Build the query string
+    // Build the query string — append optional keyword filters inline
     let searchQuery = query;
     if (author) searchQuery += ` ${author}`;
+    if (venue) searchQuery += ` ${venue}`;
     if (tags) searchQuery += ` ${tags}`;
 
-    // 1. Fetch papers from Semantic Scholar
+    // Fetch papers from Semantic Scholar
     let searchUrl = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(searchQuery)}&limit=10&fields=title,authors,year,abstract,url,citationCount,isOpenAccess,openAccessPdf,venue,journal`;
-    
+
     if (year) {
-       searchUrl += `&year=${encodeURIComponent(year)}`;
-    }
-    if (venue) {
-       searchUrl += `&venue=${encodeURIComponent(venue)}`;
+      searchUrl += `&year=${encodeURIComponent(year)}`;
     }
 
     const response = await fetch(searchUrl, {
-        headers: {
-            // Include a user agent politely if possible
-            'User-Agent': 'Research Search Engine (AI-Studio Sandbox)'
-        }
+      headers: {
+        'User-Agent': 'Research Search Engine (AI-Studio Sandbox)'
+      }
     });
 
     if (!response.ok) {
-        throw new Error(`Semantic Scholar API failed: ${response.status} ${response.statusText}`);
+      throw new Error(`Semantic Scholar API failed: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
@@ -39,8 +36,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ papers });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Internal Server Error';
     console.error('Error in search API:', error);
-    return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

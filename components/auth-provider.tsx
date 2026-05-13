@@ -26,25 +26,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setUser(user);
-      
+
       if (user) {
         // Ensure user profile exists in Firestore
         const userRef = doc(db, 'users', user.uid);
         try {
-           const userDoc = await getDoc(userRef);
-           
-           if (!userDoc.exists()) {
-              await setDoc(userRef, {
-                 email: user.email || 'no-email',
-                 createdAt: serverTimestamp()
-              });
-           }
-        } catch (e: any) {
-             console.error("Could not read/create user profile", e);
-             handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}`);
+          const userDoc = await getDoc(userRef);
+          if (!userDoc.exists()) {
+            await setDoc(userRef, {
+              email: user.email || 'no-email',
+              createdAt: serverTimestamp()
+            });
+          }
+        } catch (e: unknown) {
+          console.error('Could not read/create user profile', e);
+          handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}`);
+        } finally {
+          setLoading(false);
         }
+        return;
       }
-      
+
       setLoading(false);
     });
 

@@ -1,15 +1,45 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    function hasServerTimestamp(field) {
+      return request.resource.data[field] == request.time;
+    }
+
+    function createdAtIsImmutable() {
+      return request.resource.data.createdAt == resource.data.createdAt;
+    }
+
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-      
+      allow read, write: if isOwner(userId);
+
       match /history/{searchId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && request.resource.data.query is string
+          && request.resource.data.query.size() > 0
+          && hasServerTimestamp('createdAt');
+        // History entries are immutable once created
+        allow update: if false;
+        allow delete: if isOwner(userId);
       }
 
       match /saved_papers/{paperId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && request.resource.data.paperId is string
+          && request.resource.data.paperId.size() > 0
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() < 2000
+          && hasServerTimestamp('createdAt');
+        allow update: if isOwner(userId)
+          && createdAtIsImmutable();
+        allow delete: if isOwner(userId);
       }
     }
 

@@ -3,8 +3,8 @@ import './globals.css'; // Global styles
 import { AuthProvider } from '@/components/auth-provider';
 
 export const metadata: Metadata = {
-  title: 'My Google AI Studio App',
-  description: 'My Google AI Studio App',
+  title: 'Research Search',
+  description: 'Search millions of academic papers, synthesize findings, and accelerate your research.',
 };
 
 export default function RootLayout({children}: {children: React.ReactNode}) {

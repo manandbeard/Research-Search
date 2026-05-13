@@ -16,9 +16,12 @@ export function CitationView({ paper }: CitationViewProps) {
     e.preventDefault();
     e.stopPropagation();
     const citation = generateCitation(paper, format);
-    navigator.clipboard.writeText(citation);
-    setCopiedFormat(format);
-    setTimeout(() => setCopiedFormat(null), 2000);
+    navigator.clipboard.writeText(citation).then(() => {
+      setCopiedFormat(format);
+      setTimeout(() => setCopiedFormat(null), 2000);
+    }).catch(() => {
+      // Clipboard write failed (e.g. non-HTTPS or permission denied) — no-op
+    });
   };
 
   return (

@@ -2,18 +2,20 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, Sparkles, BookOpen, User as UserIcon, Calendar, ExternalLink, Loader2, ArrowRight, LogIn, Save, History, LogOut, Filter, Quote, Copy, Check, ChevronDown } from 'lucide-react';
+import {
+  Search, Sparkles, BookOpen, User as UserIcon, Calendar, ExternalLink,
+  Loader2, ArrowRight, LogIn, Save, History, Filter,
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useAuth } from '@/components/auth-provider';
-import { db, handleFirestoreError, OperationType } from '@/lib/firebase';
+import { db } from '@/lib/firebase';
 import { collection, doc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { generateCitation } from '@/lib/citations';
-import { GoogleGenAI } from '@google/genai';
-
 import { CitationView } from '@/components/citation-view';
 
-const ai = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY || '' });
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface Paper {
   paperId: string;
@@ -32,6 +34,97 @@ interface SearchResponse {
   papers: Paper[];
 }
 
+interface FilterValues {
+  year: string;
+  venue: string;
+  author: string;
+  tags: string;
+}
+
+interface Toast {
+  text: string;
+  type: 'success' | 'error';
+}
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+interface FilterPanelProps {
+  filters: FilterValues;
+  onChange: (key: keyof FilterValues, value: string) => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  compact?: boolean;
+}
+
+function FilterPanel({ filters, onChange, onKeyDown, compact = false }: FilterPanelProps) {
+  const inputClass = `text-sm bg-neutral-50 border border-neutral-200 ${
+    compact ? 'rounded-md px-3 py-1.5' : 'rounded-lg px-3 py-2'
+  } w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30`;
+  const labelClass = `${compact ? 'text-[10px]' : 'text-xs'} font-semibold text-neutral-500 uppercase`;
+
+  const fields = [
+    { key: 'year' as const, label: 'Year', placeholder: 'e.g. 2020-2023' },
+    { key: 'author' as const, label: 'Author', placeholder: 'e.g. Andrew Ng' },
+    { key: 'venue' as const, label: compact ? 'Venue' : 'Venue/Journal', placeholder: 'e.g. Nature' },
+    { key: 'tags' as const, label: compact ? 'Tags' : 'Tags/Keywords', placeholder: 'e.g. deep learning' },
+  ] as const;
+
+  return (
+    <div className={`grid ${compact ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'} gap-4 ${compact ? '' : 'p-4'}`}>
+      {fields.map(({ key, label, placeholder }) => (
+        <div key={key} className="flex flex-col gap-1.5">
+          <label className={labelClass}>{label}</label>
+          <input
+            type="text"
+            placeholder={placeholder}
+            value={filters[key]}
+            onChange={(e) => onChange(key, e.target.value)}
+            onKeyDown={onKeyDown}
+            className={inputClass}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+interface UserMenuProps {
+  user: { uid: string; email: string | null } | null;
+  signInIdp: () => void;
+  signOut: () => void;
+  bordered?: boolean;
+}
+
+function UserMenu({ user, signInIdp, signOut, bordered = false }: UserMenuProps) {
+  if (user) {
+    return (
+      <div className="flex items-center gap-3">
+        <div className={`hidden sm:flex items-center gap-2 text-sm text-neutral-600 font-medium bg-neutral-200/50 px-3 py-1.5 rounded-full cursor-pointer hover:bg-neutral-200 transition-colors${bordered ? ' border border-black/5' : ''}`}>
+          <History className="w-4 h-4" />
+          <span>History</span>
+        </div>
+        <button onClick={signOut} className="text-sm font-medium text-neutral-500 hover:text-neutral-800 transition-colors">
+          Sign out
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={signInIdp}
+      className="flex items-center gap-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 px-4 py-2 rounded-full hover:bg-neutral-50 transition-colors shadow-sm"
+    >
+      <LogIn className="w-4 h-4" />
+      Sign In
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export default function SearchView() {
   const { user, signInIdp, signOut } = useAuth();
   const [query, setQuery] = useState('');
@@ -39,13 +132,20 @@ export default function SearchView() {
   const [hasSearched, setHasSearched] = useState(false);
   const [results, setResults] = useState<SearchResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
 
   // Filter states
   const [showFilters, setShowFilters] = useState(false);
-  const [yearFilter, setYearFilter] = useState('');
-  const [venueFilter, setVenueFilter] = useState('');
-  const [authorFilter, setAuthorFilter] = useState('');
-  const [tagsFilter, setTagsFilter] = useState('');
+  const [filters, setFilters] = useState<FilterValues>({ year: '', venue: '', author: '', tags: '' });
+
+  const showToast = (text: string, type: Toast['type']) => {
+    setToast({ text, type });
+    setTimeout(() => setToast(null), 2500);
+  };
+
+  const handleFilterChange = (key: keyof FilterValues, value: string) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+  };
 
   const handleSearch = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -60,13 +160,7 @@ export default function SearchView() {
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          query,
-          year: yearFilter,
-          venue: venueFilter,
-          author: authorFilter,
-          tags: tagsFilter
-        }),
+        body: JSON.stringify({ query, ...filters }),
       });
 
       if (!res.ok) {
@@ -74,86 +168,93 @@ export default function SearchView() {
       }
 
       const json = await res.json();
-      const papers = json.papers || [];
+      const papers: Paper[] = json.papers || [];
 
-      // Initially set papers with empty synthesis
-      setResults({ synthesis: "", papers });
-      
-      const papersWithAbstracts = papers.filter((p: any) => p.abstract);
+      // Show papers immediately, then stream the synthesis
+      setResults({ synthesis: '', papers });
 
-      if (papersWithAbstracts.length > 0) {
-        try {
-          const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "";
-          if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
-              throw new Error("Missing Gemini API Key. Please configure GEMINI_API_KEY in the Secrets menu.");
-          }
+      const synthRes = await fetch('/api/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, papers }),
+      });
 
-          const contextLines = papersWithAbstracts.slice(0, 10).map((p: any, index: number) => {
-            return `[Source ${index + 1}] Title: ${p.title}\nAuthors: ${p.authors?.map((a:any) => a.name).join(', ')}\nYear: ${p.year}\nAbstract: ${p.abstract}\n`;
-          }).join('\n');
+      const synthJson = await synthRes.json();
 
-          const prompt = `You are an expert academic research assistant. 
-A student has asked: "${query}"
-
-Based ONLY on the provided research papers below, write a clear synthesis that answers the student's question. 
-
-Guidelines:
-- Start with a direct answer.
-- USE citations like [1], [2] at the end of sentences.
-- Use markdown for structure.
-- If the papers don't answer it, say so.
-
-Context:
-${contextLines}`;
-
-          const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-              temperature: 0.2
-            }
-          });
-
-          const synthesis = response.text || "I was unable to summarize the results.";
-
-          setResults({ synthesis, papers });
-
-          if (user && synthesis) {
-            setDoc(doc(collection(db, 'users', user.uid, 'history')), {
-              query,
-              synthesis,
-              createdAt: serverTimestamp()
-            }).catch(e => console.error("History save failed", e));
-          }
-        } catch (genErr: any) {
-          console.error("Synthesis failed", genErr);
-          setResults({ 
-            synthesis: `I found ${papers.length} papers, but I couldn't generate a summary: ${genErr.message}`, 
-            papers 
-          });
-        }
+      if (!synthRes.ok) {
+        setResults({ synthesis: `I found ${papers.length} papers, but I couldn't generate a summary: ${synthJson.error}`, papers });
       } else {
-        setResults({ 
-          synthesis: "I found some papers, but none had abstracts detailed enough to summarize.", 
-          papers 
-        });
+        const synthesis: string = synthJson.synthesis || 'I was unable to summarize the results.';
+        setResults({ synthesis, papers });
+
+        if (user && synthesis) {
+          setDoc(doc(collection(db, 'users', user.uid, 'history')), {
+            query,
+            synthesis,
+            createdAt: serverTimestamp(),
+          }).catch(e => console.error('History save failed', e));
+        }
       }
-    } catch (err: any) {
-      setError(err.message || 'An error occurred.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'An error occurred.');
     } finally {
       setIsSearching(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      handleSearch();
+  const handleSavePaper = async (paper: Paper) => {
+    if (!user) return;
+    try {
+      const encodedId = encodeURIComponent(paper.paperId);
+      const saveRef = doc(db, 'users', user.uid, 'saved_papers', encodedId);
+      await setDoc(saveRef, {
+        paperId: paper.paperId,
+        title: paper.title || 'Untitled',
+        authors: paper.authors?.map(a => a.name) || [],
+        year: paper.year || 0,
+        abstract: paper.abstract || '',
+        url: paper.url || '',
+        createdAt: serverTimestamp(),
+      });
+      showToast('Paper saved!', 'success');
+    } catch (err: unknown) {
+      console.error('Failed to save paper', err);
+      showToast(err instanceof Error ? `Error saving paper: ${err.message}` : 'Error saving paper.', 'error');
     }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') handleSearch();
+  };
+
+  const handleReset = () => {
+    setHasSearched(false);
+    setQuery('');
+    setResults(null);
   };
 
   return (
     <div className="min-h-screen bg-[#F5F5F0] text-neutral-900 font-sans selection:bg-[#5A5A40] selection:text-white pb-24">
-      {/* Navigation / Header */}
+
+      {/* Toast notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] px-5 py-3 rounded-full text-sm font-medium shadow-lg ${
+              toast.type === 'success'
+                ? 'bg-[#5A5A40] text-white'
+                : 'bg-red-600 text-white'
+            }`}
+          >
+            {toast.text}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Sticky navigation header (visible after first search) */}
       <AnimatePresence>
         {hasSearched && (
           <motion.header
@@ -161,15 +262,11 @@ ${contextLines}`;
             animate={{ y: 0, opacity: 1 }}
             className="sticky top-0 z-50 bg-[#F5F5F0]/80 backdrop-blur-md border-b border-black/10 py-4 px-6 md:px-12 flex items-center justify-between"
           >
-            <div className="flex items-center gap-2 cursor-pointer" onClick={() => {
-                setHasSearched(false);
-                setQuery('');
-                setResults(null);
-            }}>
+            <div className="flex items-center gap-2 cursor-pointer" onClick={handleReset}>
               <BookOpen className="w-6 h-6 text-[#5A5A40]" />
-              <span className="font-bold text-xl tracking-tight font-serif text-[#5A5A40]">Sooth.fy Replica</span>
+              <span className="font-bold text-xl tracking-tight font-serif text-[#5A5A40]">Research Search</span>
             </div>
-            
+
             <div className="hidden md:flex flex-1 max-w-2xl mx-8 relative">
               <input
                 type="text"
@@ -187,7 +284,7 @@ ${contextLines}`;
                 >
                   <Filter className="w-4 h-4" />
                 </button>
-                <button 
+                <button
                   onClick={handleSearch}
                   className="p-1.5 bg-[#5A5A40] text-white rounded-full hover:bg-[#4a4a35] transition-colors"
                 >
@@ -195,64 +292,29 @@ ${contextLines}`;
                 </button>
               </div>
 
-              {/* Header Floating Filters Panel */}
+              {/* Header floating filter panel */}
               <AnimatePresence>
-                  {showFilters && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      className="absolute top-12 left-0 w-full bg-white border border-black/10 shadow-xl rounded-xl p-4 z-50 grid grid-cols-2 gap-4"
-                    >
-                      <div className="flex flex-col gap-1.5">
-                        <label className="text-[10px] font-semibold text-neutral-500 uppercase">Year</label>
-                        <input type="text" placeholder="e.g. 2020-2023" value={yearFilter} onChange={(e) => setYearFilter(e.target.value)} onKeyDown={handleKeyDown} className="text-sm bg-neutral-50 border border-neutral-200 rounded-md px-3 py-1.5 w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30" />
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <label className="text-[10px] font-semibold text-neutral-500 uppercase">Author</label>
-                        <input type="text" placeholder="e.g. Andrew Ng" value={authorFilter} onChange={(e) => setAuthorFilter(e.target.value)} onKeyDown={handleKeyDown} className="text-sm bg-neutral-50 border border-neutral-200 rounded-md px-3 py-1.5 w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30" />
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <label className="text-[10px] font-semibold text-neutral-500 uppercase">Venue</label>
-                        <input type="text" placeholder="e.g. Nature" value={venueFilter} onChange={(e) => setVenueFilter(e.target.value)} onKeyDown={handleKeyDown} className="text-sm bg-neutral-50 border border-neutral-200 rounded-md px-3 py-1.5 w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30" />
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <label className="text-[10px] font-semibold text-neutral-500 uppercase">Tags</label>
-                        <input type="text" placeholder="e.g. deep learning" value={tagsFilter} onChange={(e) => setTagsFilter(e.target.value)} onKeyDown={handleKeyDown} className="text-sm bg-neutral-50 border border-neutral-200 rounded-md px-3 py-1.5 w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30" />
-                      </div>
-                    </motion.div>
-                  )}
+                {showFilters && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="absolute top-12 left-0 w-full bg-white border border-black/10 shadow-xl rounded-xl p-4 z-50"
+                  >
+                    <FilterPanel filters={filters} onChange={handleFilterChange} onKeyDown={handleKeyDown} compact />
+                  </motion.div>
+                )}
               </AnimatePresence>
             </div>
 
-            <div className="flex items-center gap-4">
-              {user ? (
-                 <div className="flex items-center gap-3">
-                   <div className="hidden sm:flex items-center gap-2 text-sm text-neutral-600 font-medium bg-neutral-200/50 px-3 py-1.5 rounded-full cursor-pointer hover:bg-neutral-200 transition-colors">
-                      <History className="w-4 h-4" />
-                      <span>History</span>
-                   </div>
-                   <button onClick={signOut} className="text-sm font-medium text-neutral-500 hover:text-neutral-800 transition-colors">
-                     Sign out
-                   </button>
-                 </div>
-              ) : (
-                <button
-                  onClick={signInIdp}
-                  className="flex items-center gap-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 px-4 py-2 rounded-full hover:bg-neutral-50 transition-colors shadow-sm"
-                >
-                  <LogIn className="w-4 h-4" />
-                  Sign In
-                </button>
-              )}
-            </div>
+            <UserMenu user={user} signInIdp={signInIdp} signOut={signOut} />
           </motion.header>
         )}
       </AnimatePresence>
 
       <main className={`max-w-5xl mx-auto px-6 md:px-12 transition-all duration-700 ease-in-out ${hasSearched ? 'pt-12' : 'pt-[30vh]'}`}>
-        
-        {/* Initial Hero Search State */}
+
+        {/* Hero search state */}
         <AnimatePresence mode="wait">
           {!hasSearched && (
             <motion.div
@@ -263,29 +325,17 @@ ${contextLines}`;
               transition={{ duration: 0.4 }}
               className="flex flex-col items-center text-center mt-8 relative"
             >
-              {/* Login Button in top right of hero state */}
+              {/* Auth buttons in top-right of hero */}
               <div className="absolute -top-24 right-0 flex items-center gap-3">
-                 {user ? (
-                   <>
-                     <div className="hidden sm:flex items-center gap-2 text-sm text-neutral-600 font-medium bg-neutral-200/50 px-3 py-1.5 rounded-full cursor-pointer hover:bg-neutral-200 transition-colors border border-black/5">
-                        <History className="w-4 h-4" />
-                        <span>History</span>
-                     </div>
-                     <button onClick={signOut} className="text-sm font-medium text-neutral-500 hover:text-neutral-800 transition-colors">Sign out</button>
-                   </>
-                 ) : (
-                   <button onClick={signInIdp} className="flex items-center gap-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 px-4 py-2 rounded-full hover:bg-neutral-50 transition-colors shadow-sm">
-                     <LogIn className="w-4 h-4" /> Sign In
-                   </button>
-                 )}
+                <UserMenu user={user} signInIdp={signInIdp} signOut={signOut} bordered />
               </div>
 
               <div className="flex items-center gap-3 mb-6">
-                 <BookOpen className="w-10 h-10 text-[#5A5A40]" />
-                 <h1 className="text-4xl md:text-5xl font-bold font-serif text-[#5A5A40]">Sooth.fy Replica</h1>
+                <BookOpen className="w-10 h-10 text-[#5A5A40]" />
+                <h1 className="text-4xl md:text-5xl font-bold font-serif text-[#5A5A40]">Research Search</h1>
               </div>
               <p className="text-neutral-500 mb-10 text-lg max-w-lg">
-                Search millions of academic papers, synthesize findings, 
+                Search millions of academic papers, synthesize findings,
                 and accelerate your research.
               </p>
 
@@ -317,7 +367,7 @@ ${contextLines}`;
                   </button>
                 </div>
 
-                {/* Filters Panel */}
+                {/* Hero filter panel */}
                 <AnimatePresence>
                   {showFilters && (
                     <motion.div
@@ -326,65 +376,20 @@ ${contextLines}`;
                       exit={{ height: 0, opacity: 0 }}
                       className="overflow-hidden border-t border-black/5 mt-2"
                     >
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-4">
-                        <div className="flex flex-col gap-1.5">
-                          <label className="text-xs font-semibold text-neutral-500 uppercase">Year</label>
-                          <input 
-                            type="text"
-                            placeholder="e.g. 2020-2023"
-                            value={yearFilter}
-                            onChange={(e) => setYearFilter(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            className="text-sm bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <label className="text-xs font-semibold text-neutral-500 uppercase">Author</label>
-                          <input 
-                            type="text"
-                            placeholder="e.g. Andrew Ng"
-                            value={authorFilter}
-                            onChange={(e) => setAuthorFilter(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            className="text-sm bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <label className="text-xs font-semibold text-neutral-500 uppercase">Venue/Journal</label>
-                          <input 
-                            type="text"
-                            placeholder="e.g. Nature"
-                            value={venueFilter}
-                            onChange={(e) => setVenueFilter(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            className="text-sm bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <label className="text-xs font-semibold text-neutral-500 uppercase">Tags/Keywords</label>
-                          <input 
-                            type="text"
-                            placeholder="e.g. deep learning"
-                            value={tagsFilter}
-                            onChange={(e) => setTagsFilter(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            className="text-sm bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-1 focus:ring-[#5A5A40]/30"
-                          />
-                        </div>
-                      </div>
+                      <FilterPanel filters={filters} onChange={handleFilterChange} onKeyDown={handleKeyDown} />
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
 
               <div className="flex gap-4 mt-8 flex-wrap justify-center">
-                 <button onClick={() => setQuery('Impact of microplastics on human health')} className="text-sm bg-neutral-200/50 hover:bg-neutral-200 px-4 py-2 rounded-full text-neutral-600 transition-colors">Impact of microplastics on human health</button>
-                 <button onClick={() => setQuery('Does sleep quality affect academic performance?')} className="text-sm bg-neutral-200/50 hover:bg-neutral-200 px-4 py-2 rounded-full text-neutral-600 transition-colors">Does sleep quality affect academic...</button>
+                <button onClick={() => setQuery('Impact of microplastics on human health')} className="text-sm bg-neutral-200/50 hover:bg-neutral-200 px-4 py-2 rounded-full text-neutral-600 transition-colors">Impact of microplastics on human health</button>
+                <button onClick={() => setQuery('Does sleep quality affect academic performance?')} className="text-sm bg-neutral-200/50 hover:bg-neutral-200 px-4 py-2 rounded-full text-neutral-600 transition-colors">Does sleep quality affect academic...</button>
               </div>
             </motion.div>
           )}
 
-          {/* Results State */}
+          {/* Results state */}
           {hasSearched && (
             <motion.div
               key="results"
@@ -392,7 +397,7 @@ ${contextLines}`;
               animate={{ opacity: 1, y: 0 }}
               className="w-full"
             >
-              {/* Mobile Search Bar (Only visible on small screens when searched) */}
+              {/* Mobile search bar */}
               <div className="md:hidden flex mb-8 relative">
                 <input
                   type="text"
@@ -402,7 +407,7 @@ ${contextLines}`;
                   placeholder="Ask a research question..."
                   className="w-full bg-white border border-neutral-200 rounded-full py-3 pl-5 pr-12 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/30"
                 />
-                <button 
+                <button
                   onClick={handleSearch}
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-[#5A5A40] text-white rounded-full"
                 >
@@ -417,8 +422,8 @@ ${contextLines}`;
                     <Sparkles className="w-4 h-4 text-orange-500 absolute -top-1 -right-1 animate-pulse" />
                   </div>
                   <div className="text-center">
-                     <h3 className="text-lg font-serif font-medium text-[#5A5A40]">Scanning literature...</h3>
-                     <p className="text-neutral-500 text-sm mt-1">Reading abstracts and synthesizing findings.</p>
+                    <h3 className="text-lg font-serif font-medium text-[#5A5A40]">Scanning literature...</h3>
+                    <p className="text-neutral-500 text-sm mt-1">Reading abstracts and synthesizing findings.</p>
                   </div>
                 </div>
               ) : error ? (
@@ -428,7 +433,7 @@ ${contextLines}`;
                 </div>
               ) : results ? (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
-                  {/* Left Column: AI Synthesis */}
+                  {/* Left column: AI synthesis */}
                   <div className="lg:col-span-2 space-y-8">
                     <div className="bg-white rounded-3xl p-8 shadow-[0_4px_20px_rgba(0,0,0,0.03)] border border-black/5">
                       <div className="flex items-center gap-2 mb-6 border-b border-black/5 pb-4">
@@ -443,25 +448,25 @@ ${contextLines}`;
                     </div>
                   </div>
 
-                  {/* Right Column: Source Papers */}
+                  {/* Right column: source papers */}
                   <div className="lg:col-span-1 space-y-4">
                     <h3 className="font-serif text-lg font-medium text-neutral-800 px-2 flex items-center gap-2">
-                       <BookOpen className="w-4 h-4 text-neutral-400" />
-                       Analyzed Sources ({results.papers?.length || 0})
+                      <BookOpen className="w-4 h-4 text-neutral-400" />
+                      Analyzed Sources ({results.papers?.length || 0})
                     </h3>
                     <div className="flex flex-col gap-4">
                       {results.papers?.map((paper, index) => (
-                        <div 
-                          key={paper.paperId} 
+                        <div
+                          key={paper.paperId}
                           onClick={() => window.open(paper.url, '_blank')}
                           className="block bg-white p-5 rounded-2xl border border-black/5 shadow-sm hover:shadow-md transition-shadow group relative overflow-visible cursor-pointer"
                         >
                           <div className="absolute top-0 left-0 w-1 h-full bg-[#5A5A40]/20 group-hover:bg-[#5A5A40] transition-colors rounded-l-2xl" />
                           <div className="flex items-start justify-between gap-2 mb-2">
                             <span className="inline-flex items-center justify-center bg-[#5A5A40]/10 text-[#5A5A40] font-mono text-xs font-bold w-6 h-6 rounded-full shrink-0">
-                                {index + 1}
+                              {index + 1}
                             </span>
-                            <a 
+                            <a
                               href={paper.url}
                               target="_blank"
                               rel="noopener noreferrer"
@@ -471,7 +476,7 @@ ${contextLines}`;
                               {paper.title}
                             </a>
                           </div>
-                          
+
                           <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-neutral-500 mt-3 pl-8">
                             {paper.authors?.length > 0 && (
                               <span className="flex items-center gap-1 max-w-full truncate">
@@ -486,7 +491,7 @@ ${contextLines}`;
                               </span>
                             )}
                           </div>
-                          
+
                           <div className="mt-4 pl-8 flex items-center justify-between relative z-10 w-full overflow-visible">
                             <div className="flex flex-wrap items-center gap-2">
                               {paper.isOpenAccess && paper.openAccessPdf?.url && (
@@ -500,40 +505,24 @@ ${contextLines}`;
                               <CitationView paper={paper} />
                             </div>
                             <div className="flex items-center gap-2">
-                               {user && (
-                                  <button onClick={async (e) => {
-                                     e.preventDefault();
-                                     e.stopPropagation();
-                                     try {
-                                        const encodedId = encodeURIComponent(paper.paperId);
-                                        const saveRef = doc(db, 'users', user.uid, 'saved_papers', encodedId);
-                                        await setDoc(saveRef, {
-                                           paperId: paper.paperId,
-                                           title: paper.title || 'Untitled',
-                                           authors: paper.authors?.map((a: any) => a.name) || [],
-                                           year: paper.year || 0,
-                                           abstract: paper.abstract || '',
-                                           url: paper.url || '',
-                                           createdAt: serverTimestamp()
-                                        });
-                                        alert('Saved!');
-                                     } catch(err: any) {
-                                        console.error("Failed to save paper", err);
-                                        alert('Error saving paper: ' + err.message);
-                                     }
-                                  }} className="p-1.5 rounded bg-neutral-100 hover:bg-[#5A5A40] text-neutral-400 hover:text-white transition-colors">
-                                     <Save className="w-3.5 h-3.5" />
-                                  </button>
-                               )}
-                               <ExternalLink className="w-3.5 h-3.5 text-neutral-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                              {user && (
+                                <button
+                                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleSavePaper(paper); }}
+                                  className="p-1.5 rounded bg-neutral-100 hover:bg-[#5A5A40] text-neutral-400 hover:text-white transition-colors"
+                                  title="Save paper"
+                                >
+                                  <Save className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              <ExternalLink className="w-3.5 h-3.5 text-neutral-400 opacity-0 group-hover:opacity-100 transition-opacity" />
                             </div>
                           </div>
                         </div>
                       ))}
-                      
+
                       {(!results.papers || results.papers.length === 0) && (
                         <div className="text-center p-6 bg-neutral-50 rounded-2xl border border-neutral-100 text-neutral-500 text-sm">
-                           No academic sources could be found for this query.
+                          No academic sources could be found for this query.
                         </div>
                       )}
                     </div>
