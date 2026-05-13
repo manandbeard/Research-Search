@@ -100,7 +100,7 @@ function UserMenu({ user, signInIdp, signOut, bordered = false }: UserMenuProps)
   if (user) {
     return (
       <div className="flex items-center gap-3">
-        <div className={`hidden sm:flex items-center gap-2 text-sm text-neutral-600 font-medium bg-neutral-200/50 px-3 py-1.5 rounded-full cursor-pointer hover:bg-neutral-200 transition-colors${bordered ? ' border border-black/5' : ''}`}>
+        <div className={`hidden sm:flex items-center gap-2 text-sm text-neutral-600 font-medium bg-neutral-200/50 px-3 py-1.5 rounded-full cursor-pointer hover:bg-neutral-200 transition-colors ${bordered ? 'border border-black/5' : ''}`}>
           <History className="w-4 h-4" />
           <span>History</span>
         </div>
